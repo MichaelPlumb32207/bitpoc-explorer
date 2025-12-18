@@ -3,7 +3,7 @@ import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
-import ExplorerHome from './pages/ExplorerHome';
+import ExplorerHome from './pages/ExplorerHome.tsx';
 import BlockDetail from './pages/BlockDetail';
 import TxDetail from './pages/TxDetail';
 import AddressDetail from './pages/AddressDetail';
