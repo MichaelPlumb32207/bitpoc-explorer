@@ -7,18 +7,26 @@ import { useNetwork } from '../utils/api';
 export default function Header() {
   const [query, setQuery] = useState('');
   const navigate = useNavigate();
-  const { network, toggleNetwork } = useNetwork();
+  const { network, toggleNetwork, apiBase } = useNetwork();
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
 
     const trimmed = query.trim();
-    const base = network === 'testnet4' ? 'testnet4/api' : 'api';
 
-    try { const { data } = await axios.get(`https://mempool.space/${base}/block/${trimmed}`); if (data?.id) return navigate(`/block/${trimmed}`); } catch {}
-    try { const { data } = await axios.get(`https://mempool.space/${base}/tx/${trimmed}`); if (data?.txid) return navigate(`/tx/${trimmed}`); } catch {}
-    try { const { data } = await axios.get(`https://mempool.space/${base}/address/${trimmed}`); if (data?.address) return navigate(`/address/${trimmed}`); } catch {}
+    try {
+      const { data } = await axios.get(`${apiBase}/block/${trimmed}`);
+      if (data?.id) return navigate(`/block/${trimmed}`);
+    } catch {}
+    try {
+      const { data } = await axios.get(`${apiBase}/tx/${trimmed}`);
+      if (data?.txid) return navigate(`/tx/${trimmed}`);
+    } catch {}
+    try {
+      const { data } = await axios.get(`${apiBase}/address/${trimmed}`);
+      if (data?.address) return navigate(`/address/${trimmed}`);
+    } catch {}
 
     alert('Not found on current network');
   };

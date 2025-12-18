@@ -2,8 +2,7 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
-
-const API = 'https://mempool.space/testnet4/api';
+import { useNetwork } from '../utils/api';
 
 interface Block {
   id: string;
@@ -17,14 +16,17 @@ interface MempoolStats {
   best_height?: number;
   count?: number;
   vsize?: number;
-  fee_histogram?: [number, number][];  // [fee_rate, vsize]
+  fee_histogram?: [number, number][];
 }
 
 export default function ExplorerHome() {
+  const { apiBase, network } = useNetwork();
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [mempool, setMempool] = useState<MempoolStats>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const networkName = network === 'testnet4' ? 'Testnet4' : 'Mainnet';
 
   useEffect(() => {
     const fetchData = async () => {
@@ -32,8 +34,8 @@ export default function ExplorerHome() {
         setLoading(true);
         setError(null);
         const [blocksRes, mempoolRes] = await Promise.all([
-          axios.get(`${API}/blocks`),
-          axios.get(`${API}/mempool`)
+          axios.get(`${apiBase}/blocks`),
+          axios.get(`${apiBase}/mempool`)
         ]);
         setBlocks(blocksRes.data.slice(0, 15));
         setMempool(mempoolRes.data);
@@ -45,14 +47,13 @@ export default function ExplorerHome() {
       }
     };
     fetchData();
-  }, []);
+  }, [apiBase]);
 
-  // Helper: Get economy fee (lowest non-zero bucket)
   const economyFee = mempool.fee_histogram?.find(bucket => bucket[1] > 0)?.[0] ?? '...';
 
   return (
     <div>
-      <h2 className="text-4xl font-bold mb-8">Testnet4 Network Overview</h2>
+      <h2 className="text-4xl font-bold mb-8">{networkName} Network Overview</h2>
 
       {error && <div className="text-red-500 mb-6">{error}</div>}
 
