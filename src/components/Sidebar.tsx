@@ -1,7 +1,10 @@
 // File: src/components/Sidebar.tsx
 import { Link } from 'react-router-dom';
+import { useNetwork } from '../utils/Api';
 
 export default function Sidebar() {
+  const { network } = useNetwork();
+
   return (
     <aside className="w-64 bg-gray-800 p-6 space-y-8">
       <div className="text-2xl font-bold text-bitcoin">BitPOC</div>
@@ -17,8 +20,7 @@ export default function Sidebar() {
         </div>
       </nav>
       <div className="text-xs text-gray-500">
-        Testnet4 Mode<br />
-        No real value
+        {network === 'testnet4' ? 'Testnet4 Mode\nNo real value' : 'Mainnet\nReal BTC value'}
       </div>
     </aside>
   );

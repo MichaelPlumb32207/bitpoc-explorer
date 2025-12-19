@@ -2,8 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
-
-const API = 'https://mempool.space/testnet4/api';
+import { useNetwork } from '../utils/Api';
 
 interface AddressData {
   address: string;
@@ -39,6 +38,7 @@ const formatBTC = (sats: number) => {
 
 export default function AddressDetail() {
   const { addr } = useParams<{ addr: string }>();
+  const { apiBase, network } = useNetwork();
   const [address, setAddress] = useState<AddressData | null>(null);
   const [txs, setTxs] = useState<TxSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,25 +46,27 @@ export default function AddressDetail() {
   const [copied, setCopied] = useState(false);
 
   const copyAddress = async () => {
+    if (!address) return;
     try {
-      await navigator.clipboard.writeText(address!.address);
+      await navigator.clipboard.writeText(address.address);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000); // Reset toast after 2s
-    } catch (err) {
-      alert('Failed to copy address');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      alert('Failed to copy');
     }
   };
 
   useEffect(() => {
+    console.log(`Fetching address data for ${network} using apiBase: ${apiBase}`);
     const fetchAddress = async () => {
       try {
         setLoading(true);
         setError(null);
 
-        const { data } = await axios.get(`${API}/address/${addr}`);
+        const { data } = await axios.get(`${apiBase}/address/${addr}`);
         setAddress(data);
 
-        const txRes = await axios.get(`${API}/address/${addr}/txs`);
+        const txRes = await axios.get(`${apiBase}/address/${addr}/txs`);
         setTxs(txRes.data.slice(0, 20));
       } catch (err) {
         setError('Address not found or network error. Check the address and try again.');
@@ -74,7 +76,7 @@ export default function AddressDetail() {
       }
     };
     fetchAddress();
-  }, [addr]);
+  }, [addr, apiBase, network]); // network added for refetch on toggle
 
   if (loading) {
     return (

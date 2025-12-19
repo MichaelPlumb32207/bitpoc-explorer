@@ -2,8 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
-
-const API = 'https://mempool.space/testnet4/api';
+import { useNetwork } from '../utils/Api';
 
 interface Vin {
   txid?: string;
@@ -47,26 +46,31 @@ const formatBTC = (sats: number) => {
 
 export default function TxDetail() {
   const { txid } = useParams<{ txid: string }>();
+  const { apiBase, network } = useNetwork();
   const [tx, setTx] = useState<TxData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    console.log(`Fetching tx data for ${network} using apiBase: ${apiBase}`);
     const fetchTx = async () => {
       try {
         setLoading(true);
         setError(null);
-        const { data } = await axios.get(`${API}/tx/${txid}`);
+        const { data } = await axios.get(`${apiBase}/tx/${txid}`);
         setTx(data);
       } catch (err) {
         setError('Transaction not found or network error. Check the TXID and try again.');
         console.error(err);
       } finally {
         setLoading(false);
+        if (tx?.status?.block_height) {
+          console.log('Current block height for tx:', tx.status.block_height);
+        }
       }
     };
     fetchTx();
-  }, [txid]);
+  }, [txid, apiBase, network]); // network added for refetch on toggle
 
   if (loading) {
     return (

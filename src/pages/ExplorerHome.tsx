@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
-import { useNetwork } from '../utils/api';
+import { useNetwork } from '../utils/Api';
 
 interface Block {
   id: string;
@@ -30,15 +30,21 @@ export default function ExplorerHome() {
 
   useEffect(() => {
     const fetchData = async () => {
+      console.log(`Fetching data for ${network} using apiBase: ${apiBase}`);
       try {
         setLoading(true);
         setError(null);
+        setBlocks([]); // Explicit clear
+        setMempool({}); // Explicit clear
+
         const [blocksRes, mempoolRes] = await Promise.all([
           axios.get(`${apiBase}/blocks`),
           axios.get(`${apiBase}/mempool`)
         ]);
         setBlocks(blocksRes.data.slice(0, 15));
         setMempool(mempoolRes.data);
+
+        console.log('Current tip height:', mempoolRes.data.best_height);
       } catch (err) {
         setError('Failed to load network data. Please refresh.');
         console.error(err);
@@ -47,7 +53,7 @@ export default function ExplorerHome() {
       }
     };
     fetchData();
-  }, [apiBase]);
+  }, [apiBase, network]); // Refetch on network toggle
 
   const economyFee = mempool.fee_histogram?.find(bucket => bucket[1] > 0)?.[0] ?? '...';
 
@@ -103,19 +109,25 @@ export default function ExplorerHome() {
                 </tr>
               </thead>
               <tbody>
-                {blocks.map(block => (
-                  <tr key={block.id} className="border-t border-gray-700 hover:bg-gray-700 transition">
-                    <td className="p-4">
-                      <Link to={`/block/${block.height}`} className="text-bitcoin hover:underline">
-                        {block.height}
-                      </Link>
-                    </td>
-                    <td className="p-4 font-mono text-sm">{block.id.slice(0, 16)}...</td>
-                    <td className="p-4">{new Date(block.timestamp * 1000).toLocaleString()}</td>
-                    <td className="p-4">{block.tx_count}</td>
-                    <td className="p-4">{(block.size / 1000).toFixed(1)} KB</td>
+                {blocks.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="p-4 text-center text-gray-500">No blocks loaded</td>
                   </tr>
-                ))}
+                ) : (
+                  blocks.map(block => (
+                    <tr key={block.id} className="border-t border-gray-700 hover:bg-gray-700 transition">
+                      <td className="p-4">
+                        <Link to={`/block/${block.height}`} className="text-bitcoin hover:underline">
+                          {block.height}
+                        </Link>
+                      </td>
+                      <td className="p-4 font-mono text-sm">{block.id.slice(0, 16)}...</td>
+                      <td className="p-4">{new Date(block.timestamp * 1000).toLocaleString()}</td>
+                      <td className="p-4">{block.tx_count}</td>
+                      <td className="p-4">{(block.size / 1000).toFixed(1)} KB</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

@@ -2,10 +2,9 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
+import { useNetwork } from '../utils/Api';
 
-const API = 'https://mempool.space/testnet4/api';
-
-const MAX_SUMMARY_TXS = 200; // Threshold for detailed From/Amount/To summaries
+const MAX_SUMMARY_TXS = 200;
 
 interface BriefTx {
   txid: string;
@@ -43,12 +42,14 @@ const formatValue = (sats: number) => {
 
 export default function BlockDetail() {
   const { id } = useParams<{ id: string }>();
+  const { apiBase, network } = useNetwork();
   const [block, setBlock] = useState<BlockData | null>(null);
   const [txSummaries, setTxSummaries] = useState<(BriefTx | null)[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    console.log(`Fetching block data for ${network} using apiBase: ${apiBase}`);
     const fetchBlock = async () => {
       try {
         setLoading(true);
@@ -57,16 +58,17 @@ export default function BlockDetail() {
 
         let blockHash: string;
         if (/^\d+$/.test(id!)) {
-          const heightRes = await axios.get(`${API}/blocks/${id}`);
-          if (heightRes.data.length === 0) throw new Error('Block not found');
-          blockHash = heightRes.data[0].id;
+          const heightEndpoint = network === 'mainnet' ? `${apiBase}/block-height/${id}` : `${apiBase}/blocks/${id}`;
+          const heightRes = await axios.get(heightEndpoint);
+          blockHash = heightRes.data;
+          if (network === 'testnet4' && Array.isArray(heightRes.data)) blockHash = heightRes.data[0]?.id;
         } else {
           blockHash = id!;
         }
 
-        const { data } = await axios.get(`${API}/block/${blockHash}`);
+        const { data } = await axios.get(`${apiBase}/block/${blockHash}`);
         if (!data.txids && data.tx_count > 0) {
-          const txRes = await axios.get(`${API}/block/${blockHash}/txids`);
+          const txRes = await axios.get(`${apiBase}/block/${blockHash}/txids`);
           data.txids = txRes.data;
         }
         setBlock(data);
@@ -77,7 +79,7 @@ export default function BlockDetail() {
           const summaries: (BriefTx | null)[] = [];
           for (const txid of data.txids) {
             try {
-              const txRes = await axios.get(`${API}/tx/${txid}`);
+              const txRes = await axios.get(`${apiBase}/tx/${txid}`);
               summaries.push(txRes.data);
             } catch (txErr) {
               console.warn(`Failed to fetch tx ${txid}`);
@@ -87,17 +89,20 @@ export default function BlockDetail() {
           }
           setTxSummaries(summaries);
         } else {
-          setTxSummaries([]); // Use txids only for large blocks
+          setTxSummaries([]);
         }
       } catch (err) {
         setError('Block not found or network error. Check the ID and try again.');
         console.error(err);
       } finally {
         setLoading(false);
+        if (block) {
+          console.log('Current block height:', block.height);
+        }
       }
     };
     fetchBlock();
-  }, [id]);
+  }, [id, apiBase, network]); // network added for refetch on toggle
 
   if (loading) {
     return (
@@ -204,7 +209,7 @@ export default function BlockDetail() {
               )
             ) : txSummaries.length === 0 ? (
               <tr>
-                <td colSpan={4} className="p-4 text-center text-gray-500">Loading transaction summaries...</td>
+                <td colSpan={4} className="p-4 text-center text-gray-500">No transaction summaries available</td>
               </tr>
             ) : (
               txSummaries.map((tx, i) => {
