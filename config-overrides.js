@@ -7,22 +7,23 @@ module.exports = function override(config) {
     "buffer": require.resolve("buffer/"),
     "stream": require.resolve("stream-browserify"),
     "crypto": require.resolve("crypto-browserify"),
-    "assert": require.resolve("assert"),
+    "assert": require.resolve("assert/"),
     "http": require.resolve("stream-http"),
     "https": require.resolve("https-browserify"),
-    "os": require.resolve("os-browserify"),
-    "url": require.resolve("url"),
+    "os": require.resolve("os-browserify/browser"),
+    "url": require.resolve("url/"),
+    "process": require.resolve("process/browser"),
   });
   config.resolve.fallback = fallback;
 
   config.plugins = (config.plugins || []).concat([
     new webpack.ProvidePlugin({
-      Buffer: ['buffer', 'Buffer'],
       process: 'process/browser',
+      Buffer: ['buffer', 'Buffer'],
     }),
   ]);
 
-  // Fix for some modules using fully specified imports
+  // For ESM modules that use fully specified imports
   config.module.rules.push({
     test: /\.m?js/,
     resolve: { fullySpecified: false },

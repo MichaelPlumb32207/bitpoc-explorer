@@ -23,6 +23,7 @@
     "ecpair": "^3.0.0",
     "https-browserify": "^1.0.0",
     "os-browserify": "^0.3.0",
+    "process": "^0.11.10",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
@@ -35,11 +36,11 @@
     "url": "^0.11.4",
     "web-vitals": "^2.1.4"
   },
-"scripts": {
-  "start": "react-app-rewired start",
-  "build": "react-app-rewired build",
-  "test": "react-app-rewired test",
-  "eject": "react-scripts eject"
+  "scripts": {
+    "start": "react-app-rewired start",
+    "build": "react-app-rewired build",
+    "test": "react-app-rewired test",
+    "eject": "react-scripts eject"
   },
   "eslintConfig": {
     "extends": [
