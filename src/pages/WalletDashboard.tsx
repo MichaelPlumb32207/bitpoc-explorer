@@ -38,7 +38,7 @@ export default function WalletDashboard() {
   const [activeTab, setActiveTab] = useState<'receive' | 'send'>('receive');
   const [recipient, setRecipient] = useState('');
   const [amountSats, setAmountSats] = useState('');
-  const [feeRate, setFeeRate] = useState(5); // sat/vB
+  const [feeRate, setFeeRate] = useState(5);
   const [sending, setSending] = useState(false);
   const [txHash, setTxHash] = useState('');
   const [sendError, setSendError] = useState('');
@@ -46,6 +46,9 @@ export default function WalletDashboard() {
   const [selectedUtxoIds, setSelectedUtxoIds] = useState<Set<string>>(new Set());
   const [estimatedFee, setEstimatedFee] = useState(0);
   const [showMainnetConfirm, setShowMainnetConfirm] = useState(false);
+
+  // Previous addresses expand state
+  const [showPreviousAddresses, setShowPreviousAddresses] = useState(false);
 
   const isMainnet = network === 'mainnet';
 
@@ -158,7 +161,6 @@ export default function WalletDashboard() {
 
       const psbt = new bitcoin.Psbt({ network: walletNetwork });
 
-      let inputSum = 0;
       for (const utxo of selected) {
         const index = receiveAddresses.indexOf(utxo.address);
         const keyPair = getKeyPairForIndex(index);
@@ -172,8 +174,6 @@ export default function WalletDashboard() {
           },
           sequence: 0xfffffffd, // Enable RBF
         });
-
-        inputSum += utxo.value;
       }
 
       psbt.addOutput({
@@ -210,6 +210,7 @@ export default function WalletDashboard() {
     }
   };
 
+  // No wallet connected - show create/import buttons
   if (!mnemonic) {
     return (
       <div className="max-w-2xl mx-auto">
@@ -237,7 +238,96 @@ export default function WalletDashboard() {
           </div>
         </div>
 
-        {/* Modals omitted for brevity - keep your existing ones */}
+        {/* Create Modal */}
+        {showCreateModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+            <div className="bg-gray-800 p-8 rounded-lg max-w-lg w-full">
+              <h3 className="text-2xl mb-4">Create New Wallet</h3>
+              <div className="mb-4">
+                <label className="block mb-2">Word count</label>
+                <select
+                  value={wordCount}
+                  onChange={(e) => setWordCount(Number(e.target.value) as 128 | 256)}
+                  className="w-full px-4 py-2 bg-gray-700 rounded"
+                >
+                  <option value={128}>12 words</option>
+                  <option value={256}>24 words (more secure)</option>
+                </select>
+              </div>
+              <div className="mb-6">
+                <label className="block mb-2">
+                  Optional passphrase (recommended for extra protection)
+                </label>
+                <input
+                  type="password"
+                  value={newPassphrase}
+                  onChange={(e) => setNewPassphrase(e.target.value)}
+                  className="w-full px-4 py-2 bg-gray-700 rounded"
+                  placeholder="Leave empty for no passphrase"
+                />
+                <p className="text-xs text-gray-400 mt-2">
+                  This salts your seed – different passphrase = different wallet
+                </p>
+              </div>
+              <div className="flex justify-end space-x-4">
+                <button
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 bg-gray-700 rounded hover:bg-gray-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreate}
+                  className="px-4 py-2 bg-bitcoin text-black font-semibold rounded hover:bg-orange-400"
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Import Modal */}
+        {showImportModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+            <div className="bg-gray-800 p-8 rounded-lg max-w-lg w-full">
+              <h3 className="text-2xl mb-4">Import Wallet</h3>
+              <div className="mb-4">
+                <label className="block mb-2">Seed phrase (12 or 24 words)</label>
+                <textarea
+                  value={importMnemonic}
+                  onChange={(e) => setImportMnemonic(e.target.value)}
+                  rows={4}
+                  className="w-full px-4 py-2 bg-gray-700 rounded font-mono text-sm"
+                  placeholder="word1 word2 word3 ..."
+                />
+              </div>
+              <div className="mb-6">
+                <label className="block mb-2">Optional passphrase</label>
+                <input
+                  type="password"
+                  value={importPassphrase}
+                  onChange={(e) => setImportPassphrase(e.target.value)}
+                  className="w-full px-4 py-2 bg-gray-700 rounded"
+                />
+              </div>
+              <div className="flex justify-end space-x-4">
+                <button
+                  onClick={() => setShowImportModal(false)}
+                  className="px-4 py-2 bg-gray-700 rounded hover:bg-gray-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleImport}
+                  className="px-4 py-2 bg-bitcoin text-black font-semibold rounded hover:bg-orange-400"
+                >
+                  Import
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -285,7 +375,6 @@ export default function WalletDashboard() {
 
       {activeTab === 'receive' && currentAddress && (
         <>
-          {/* Existing Receive tab UI - keep your current code */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
             <div className="bg-gray-800 p-6 rounded-lg">
               <div className="text-gray-400 text-sm mb-2">
@@ -347,14 +436,29 @@ export default function WalletDashboard() {
 
           {receiveAddresses.length > 1 && (
             <div className="mb-12">
-              <h3 className="text-xl font-semibold mb-4">Previous Receive Addresses</h3>
-              <div className="space-y-4">
-                {receiveAddresses.slice(0, -1).reverse().map((addr, i) => (
-                  <div key={i} className="bg-gray-800 p-4 rounded-lg font-mono text-sm break-all">
-                    Index {currentReceiveIndex - 1 - i}: {addr}
-                  </div>
-                ))}
-              </div>
+              <button
+                onClick={() => setShowPreviousAddresses(!showPreviousAddresses)}
+                className="text-xl font-semibold mb-4 flex items-center space-x-2 hover:text-bitcoin transition"
+              >
+                <span>Previous Receive Addresses ({receiveAddresses.length - 1})</span>
+                <svg
+                  className={`w-5 h-5 transition-transform ${showPreviousAddresses ? 'rotate-90' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+              {showPreviousAddresses && (
+                <div className="space-y-4">
+                  {receiveAddresses.slice(0, -1).reverse().map((addr: string, i: number) => (
+                    <div key={i} className="bg-gray-800 p-4 rounded-lg font-mono text-sm break-all">
+                      Index {currentReceiveIndex - 1 - i}: {addr}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -488,7 +592,7 @@ export default function WalletDashboard() {
         </div>
       )}
 
-      {/* Seed Backup Modal - keep your existing one */}
+      {/* Seed Backup Modal */}
       {showSeed && mnemonic && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
           <div className="bg-gray-800 p-8 rounded-lg max-w-2xl w-full">

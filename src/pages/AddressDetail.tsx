@@ -48,7 +48,6 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Determine which addresses to query
   const addressesToQuery = isWallet && receiveAddresses.length > 0
     ? receiveAddresses
     : overrideAddr
@@ -82,19 +81,12 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
         setAddressesData([]);
         setAllTxs([]);
 
-        // DEBUG: Log exactly which addresses we're querying
-        console.log('Wallet Balance Debug - Querying these addresses:', addressesToQuery);
-
-        // Fetch address stats for each address
         const dataPromises = addressesToQuery.map(async (address) => {
           try {
             const { data } = await axios.get(`${apiBase}/address/${address}`);
-            console.log(`Debug - ${address}: funded_sum=${data.chain_stats.funded_txo_sum}, spent_sum=${data.chain_stats.spent_txo_sum}`);
             return data as AddressData;
           } catch (err: any) {
             if (err.response?.status === 404) {
-              console.log(`Debug - ${address}: Not found (404) - treating as empty`);
-              // Fresh/empty address – return zeroed stats
               return {
                 address,
                 chain_stats: {
@@ -113,7 +105,6 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
                 },
               };
             }
-            console.error(`Debug - Failed to fetch ${address}:`, err);
             throw err;
           }
         });
@@ -121,7 +112,6 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
         const results = await Promise.all(dataPromises);
         setAddressesData(results);
 
-        // Fetch recent transactions for all addresses
         const txPromises = addressesToQuery.flatMap((address) => [
           axios.get(`${apiBase}/address/${address}/txs`).catch(() => ({ data: [] })),
           axios.get(`${apiBase}/address/${address}/txs/mempool`).catch(() => ({ data: [] })),
@@ -130,7 +120,6 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
         const txResponses = await Promise.all(txPromises);
         const combinedTxs: TxSummary[] = txResponses.flatMap((res) => res.data);
 
-        // Deduplicate and sort by time (newest first), limit to 20
         const uniqueTxs = Array.from(
           new Map(combinedTxs.map((tx) => [tx.txid, tx])).values()
         )
@@ -161,7 +150,6 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
     return <div className="text-red-500 text-xl">{error || 'No address data'}</div>;
   }
 
-  // Aggregate balances across all addresses when in wallet mode
   const totalBalance = addressesData.reduce(
     (sum, data) => sum + (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum),
     0
@@ -172,27 +160,6 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
 
   return (
     <div>
-      {/* DEBUG SECTION - Remove this entire div when debugging is complete */}
-      {isWallet && (
-        <div className="bg-yellow-900 p-4 rounded-lg mb-8 text-sm">
-          <strong>DEBUG: Wallet is querying {addressesToQuery.length} address(es):</strong>
-          <ul className="mt-2 space-y-1 font-mono text-xs">
-            {addressesToQuery.map((a, i) => (
-              <li key={i}>
-                [{i}] {a} → Balance: {formatBTC(
-                  addressesData.find(d => d.address === a)?.chain_stats.funded_txo_sum || 0 -
-                  (addressesData.find(d => d.address === a)?.chain_stats.spent_txo_sum || 0)
-                )}
-              </li>
-            ))}
-          </ul>
-          <p className="mt-2">
-            <strong>Total calculated balance: {formatBTC(totalBalance)}</strong>
-          </p>
-        </div>
-      )}
-      {/* END DEBUG SECTION */}
-
       <div className="flex items-center mb-8">
         <h2 className="text-4xl font-bold">
           {isWallet ? 'My Wallet Balance' : `Address ${displayAddress.slice(0, 12)}...${displayAddress.slice(-10)}`}

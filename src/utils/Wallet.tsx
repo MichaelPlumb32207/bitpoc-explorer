@@ -5,10 +5,13 @@ import * as bitcoin from 'bitcoinjs-lib';
 import BIP32Factory from 'bip32';
 import ecc from '@bitcoinerlab/secp256k1';
 import axios from 'axios';
-import { useNetwork } from './Api'; // Add this import
+import { useNetwork } from './Api'; // For dynamic apiBase
 
-// Initialize BIP32 with the ECC library
+// Initialize BIP32 with the ECC library (pure JS, no WASM)
 const bip32 = BIP32Factory(ecc);
+
+const GAP_LIMIT = 20; // Standard BIP44 gap limit for scanning
+const LOOKAHEAD = 1;  // Number of unused addresses to keep visible (the next one)
 
 interface UTXO {
   txid: string;
@@ -22,7 +25,8 @@ interface WalletContextType {
   mnemonic: string | null;
   passphrase: string;
   setPassphrase: (p: string) => void;
-  receiveAddresses: string[];
+  receiveAddresses: string[];        // All derived addresses (including lookahead)
+  visibleReceiveAddresses: string[]; // Only addresses to display (used + lookahead)
   currentReceiveIndex: number;
   nextReceiveAddress: () => void;
   generateWallet: (wordCount: 128 | 256) => void;
@@ -46,13 +50,15 @@ interface StoredWallet {
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const { apiBase } = useNetwork(); // Get dynamic API base
+  const { apiBase } = useNetwork();
 
   const [mnemonic, setMnemonic] = useState<string | null>(null);
   const [passphrase, setPassphraseState] = useState('');
-  const [receiveAddresses, setReceiveAddresses] = useState<string[]>([]);
+  const [allAddresses, setAllAddresses] = useState<string[]>([]);      // All derived up to current index
+  const [visibleAddresses, setVisibleAddresses] = useState<string[]>([]); // Used + lookahead
   const [currentReceiveIndex, setCurrentReceiveIndex] = useState(0);
   const [root, setRoot] = useState<any>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   // Load wallet from localStorage on mount
   useEffect(() => {
@@ -70,38 +76,106 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Derive root and addresses
+  // Derive root when mnemonic/passphrase changes
   useEffect(() => {
     if (!mnemonic) {
-      setReceiveAddresses([]);
       setRoot(null);
       return;
     }
-
     try {
       const seed = bip39.mnemonicToSeedSync(mnemonic, passphrase);
       const newRoot = bip32.fromSeed(seed, NETWORK);
       setRoot(newRoot);
+    } catch (err) {
+      console.error('Failed to derive root', err);
+      setRoot(null);
+    }
+  }, [mnemonic, passphrase]);
 
-      const newAddresses: string[] = [];
-      for (let i = 0; i <= currentReceiveIndex; i++) {
-        const path = `m/84'/1'/0'/0/${i}`;
-        const child = newRoot.derivePath(path);
+  // Scan for used addresses with gap limit when root is ready
+  useEffect(() => {
+    if (!root || isScanning) return;
+
+    const scanForActivity = async () => {
+      setIsScanning(true);
+      let maxUsedIndex = -1;
+      let consecutiveUnused = 0;
+      let index = 0;
+
+      while (consecutiveUnused < GAP_LIMIT) {
+        const path = `m/84'/1'/0'/0/${index}`;
+        const child = root.derivePath(path);
         const { address } = bitcoin.payments.p2wpkh({
           pubkey: child.publicKey,
           network: NETWORK,
         });
-        if (address) {
-          newAddresses.push(address);
+
+        if (!address) {
+          index++;
+          continue;
         }
+
+        try {
+          const { data } = await axios.get(`${apiBase}/address/${address}`);
+          const hasActivity = data.chain_stats.tx_count > 0 || data.chain_stats.funded_txo_sum > 0;
+
+          if (hasActivity) {
+            maxUsedIndex = index;
+            consecutiveUnused = 0;
+          } else {
+            consecutiveUnused++;
+          }
+        } catch (err) {
+          consecutiveUnused++;
+        }
+
+        index++;
       }
-      setReceiveAddresses(newAddresses);
-    } catch (err: any) {
-      console.error('Error deriving wallet:', err);
-      setReceiveAddresses([]);
-      setRoot(null);
+
+      const newIndex = maxUsedIndex >= 0 ? maxUsedIndex + GAP_LIMIT + LOOKAHEAD - 1 : GAP_LIMIT + LOOKAHEAD - 1;
+      setCurrentReceiveIndex(newIndex);
+      setIsScanning(false);
+    };
+
+    scanForActivity();
+  }, [root, apiBase]);
+
+  // Derive all addresses up to current index
+  useEffect(() => {
+    if (!root) {
+      setAllAddresses([]);
+      setVisibleAddresses([]);
+      return;
     }
-  }, [mnemonic, passphrase, currentReceiveIndex]);
+
+    const derived: string[] = [];
+    for (let i = 0; i <= currentReceiveIndex; i++) {
+      const path = `m/84'/1'/0'/0/${i}`;
+      const child = root.derivePath(path);
+      const { address } = bitcoin.payments.p2wpkh({
+        pubkey: child.publicKey,
+        network: NETWORK,
+      });
+      if (address) {
+        derived.push(address);
+      }
+    }
+    setAllAddresses(derived);
+
+    // Determine visible addresses: all used + LOOKAHEAD unused at the end
+    const visible: string[] = [];
+    let unusedStreak = 0;
+    for (let i = derived.length - 1; i >= 0; i--) {
+      // We can't know "used" here without another API call, so we show all up to the last LOOKAHEAD
+      visible.unshift(derived[i]);
+      unusedStreak++;
+      if (unusedStreak >= LOOKAHEAD) break;
+    }
+    // If there are used addresses earlier, include them (simple: show last 10 + lookahead)
+    // For better UX, we show only the last few + lookahead
+    const start = Math.max(0, derived.length - 10 - LOOKAHEAD);
+    setVisibleAddresses(derived.slice(start));
+  }, [root, currentReceiveIndex]);
 
   // Persist wallet state
   useEffect(() => {
@@ -143,18 +217,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const clearWallet = () => {
     setMnemonic(null);
     setPassphraseState('');
-    setReceiveAddresses([]);
+    setAllAddresses([]);
+    setVisibleAddresses([]);
     setCurrentReceiveIndex(0);
     setRoot(null);
     localStorage.removeItem(STORAGE_KEY);
   };
 
-  // Use dynamic apiBase for UTXO fetch
   const getUtxos = async (): Promise<UTXO[]> => {
-    if (!receiveAddresses.length) return [];
+    if (!allAddresses.length) return [];
 
     const utxos: UTXO[] = [];
-    for (const address of receiveAddresses) {
+    for (const address of allAddresses) {
       try {
         const { data } = await axios.get(`${apiBase}/address/${address}/utxo`);
         data.forEach((u: any) => {
@@ -185,7 +259,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         mnemonic,
         passphrase,
         setPassphrase,
-        receiveAddresses,
+        receiveAddresses: allAddresses,
+        visibleReceiveAddresses: visibleAddresses,
         currentReceiveIndex,
         nextReceiveAddress,
         generateWallet,
