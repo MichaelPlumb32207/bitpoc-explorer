@@ -3,7 +3,7 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import * as bip39 from 'bip39';
 import * as bitcoin from 'bitcoinjs-lib';
 import BIP32Factory from 'bip32';
-import ecc from 'tiny-secp256k1/lib/index.js';  // <-- This forces pure JS mode (no WASM)
+import ecc from '@bitcoinerlab/secp256k1';
 
 // Initialize BIP32 with the ECC library
 const bip32 = BIP32Factory(ecc);
@@ -68,6 +68,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
       const newAddresses: string[] = [];
       for (let i = 0; i <= currentReceiveIndex; i++) {
+        // BIP84 derivation path for native SegWit (P2WPKH) on testnet
         const path = `m/84'/1'/0'/0/${i}`;
         const child = root.derivePath(path);
         const { address } = bitcoin.payments.p2wpkh({
@@ -86,7 +87,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, [mnemonic, passphrase, currentReceiveIndex]);
 
-  // Persist wallet state
+  // Persist wallet state whenever it changes
   useEffect(() => {
     if (mnemonic) {
       const toStore: StoredWallet = {
@@ -100,6 +101,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const setPassphrase = (p: string) => {
     setPassphraseState(p);
+    // Changing passphrase creates entirely new wallet - reset index
     setCurrentReceiveIndex(0);
   };
 
