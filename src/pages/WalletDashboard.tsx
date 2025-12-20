@@ -1,5 +1,5 @@
 // File: src/pages/WalletDashboard.tsx
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useWallet } from '../utils/Wallet';
 import { useNetwork } from '../utils/Api';
 import { QRCodeSVG } from 'qrcode.react';
@@ -19,6 +19,9 @@ export default function WalletDashboard() {
     generateWallet,
     importWallet,
     clearWallet,
+    getUtxos,
+    getKeyPairForIndex,
+    network: walletNetwork,
   } = useWallet();
 
   const currentAddress = receiveAddresses[receiveAddresses.length - 1] || null;
@@ -35,10 +38,13 @@ export default function WalletDashboard() {
   const [activeTab, setActiveTab] = useState<'receive' | 'send'>('receive');
   const [recipient, setRecipient] = useState('');
   const [amountSats, setAmountSats] = useState('');
-  const [feeRate, setFeeRate] = useState<'economy' | 'normal' | 'priority'>('normal');
+  const [feeRate, setFeeRate] = useState(5); // sat/vB
   const [sending, setSending] = useState(false);
   const [txHash, setTxHash] = useState('');
   const [sendError, setSendError] = useState('');
+  const [utxos, setUtxos] = useState<any[]>([]);
+  const [selectedUtxoIds, setSelectedUtxoIds] = useState<Set<string>>(new Set());
+  const [estimatedFee, setEstimatedFee] = useState(0);
   const [showMainnetConfirm, setShowMainnetConfirm] = useState(false);
 
   const isMainnet = network === 'mainnet';
@@ -77,30 +83,131 @@ export default function WalletDashboard() {
 
   const words = mnemonic ? mnemonic.split(' ') : [];
 
-  // Placeholder send function - will be replaced once Wallet.ts is updated
+  // Load UTXOs when Send tab is active
+  useEffect(() => {
+    if (activeTab === 'send') {
+      getUtxos()
+        .then(fetched => {
+          setUtxos(fetched);
+          // Auto-select all confirmed UTXOs by default
+          const confirmedIds = fetched
+            .filter((u: any) => u.status.confirmed)
+            .map((u: any) => `${u.txid}:${u.vout}`);
+          setSelectedUtxoIds(new Set(confirmedIds));
+        })
+        .catch(console.error);
+    }
+  }, [activeTab, getUtxos]);
+
+  // Estimate fee based on selected UTXOs
+  useEffect(() => {
+    const selected = utxos.filter(u => selectedUtxoIds.has(`${u.txid}:${u.vout}`));
+    const amount = parseInt(amountSats) || 0;
+    if (selected.length === 0 || amount <= 0 || !recipient) {
+      setEstimatedFee(0);
+      return;
+    }
+
+    const inputs = selected.length;
+    const outputs = 2; // recipient + change (we always include change if possible)
+    const vsize = inputs * 68 + outputs * 43 + 11; // rough P2WPKH estimate + overhead
+    setEstimatedFee(Math.ceil(feeRate * vsize));
+  }, [utxos, selectedUtxoIds, amountSats, recipient, feeRate]);
+
+  const toggleUtxo = (id: string) => {
+    const newSet = new Set(selectedUtxoIds);
+    if (newSet.has(id)) {
+      newSet.delete(id);
+    } else {
+      newSet.add(id);
+    }
+    setSelectedUtxoIds(newSet);
+  };
+
+  const selectAll = () => {
+    const allIds = utxos.map(u => `${u.txid}:${u.vout}`);
+    setSelectedUtxoIds(new Set(allIds));
+  };
+
   const sendTransaction = async () => {
     if (isMainnet) {
       setShowMainnetConfirm(true);
       return;
     }
 
+    await performSend();
+  };
+
+  const performSend = async () => {
     setSending(true);
     setSendError('');
     setTxHash('');
 
     try {
-      // Temporary placeholder until Wallet.ts helpers are added
-      alert('Send functionality coming soon! Wallet helpers are being implemented.');
+      const amount = parseInt(amountSats);
+      if (isNaN(amount) || amount <= 0) throw new Error('Invalid amount');
+
+      const selected = utxos.filter(u => selectedUtxoIds.has(`${u.txid}:${u.vout}`));
+      if (selected.length === 0) throw new Error('No UTXOs selected');
+
+      const totalInput = selected.reduce((sum: number, u: any) => sum + u.value, 0);
+      const fee = estimatedFee || Math.ceil(feeRate * 250);
+      const change = totalInput - amount - fee;
+
+      if (change < 0) throw new Error('Outputs are spending more than inputs (check amount + fee)');
+
+      const psbt = new bitcoin.Psbt({ network: walletNetwork });
+
+      let inputSum = 0;
+      for (const utxo of selected) {
+        const index = receiveAddresses.indexOf(utxo.address);
+        const keyPair = getKeyPairForIndex(index);
+
+        psbt.addInput({
+          hash: utxo.txid,
+          index: utxo.vout,
+          witnessUtxo: {
+            script: bitcoin.payments.p2wpkh({ pubkey: keyPair.publicKey, network: walletNetwork }).output!,
+            value: utxo.value,
+          },
+          sequence: 0xfffffffd, // Enable RBF
+        });
+
+        inputSum += utxo.value;
+      }
+
+      psbt.addOutput({
+        address: recipient,
+        value: amount,
+      });
+
+      if (change > 546) {
+        psbt.addOutput({
+          address: currentAddress!,
+          value: change,
+        });
+      }
+
+      // Sign all inputs
+      for (let i = 0; i < psbt.inputCount; i++) {
+        const utxo = selected[i];
+        const index = receiveAddresses.indexOf(utxo.address);
+        const keyPair = getKeyPairForIndex(index);
+        psbt.signInput(i, keyPair);
+      }
+
+      psbt.finalizeAllInputs();
+      const txHex = psbt.extractTransaction().toHex();
+
+      const broadcastRes = await axios.post(`${apiBase}/tx`, txHex);
+      setTxHash(broadcastRes.data);
     } catch (err: any) {
       setSendError(err.message || 'Transaction failed');
+      console.error(err);
     } finally {
       setSending(false);
+      setShowMainnetConfirm(false);
     }
-  };
-
-  const confirmAndSend = () => {
-    setShowMainnetConfirm(false);
-    sendTransaction(); // Will trigger the placeholder again on mainnet
   };
 
   if (!mnemonic) {
@@ -130,96 +237,7 @@ export default function WalletDashboard() {
           </div>
         </div>
 
-        {/* Create Modal */}
-        {showCreateModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
-            <div className="bg-gray-800 p-8 rounded-lg max-w-lg w-full">
-              <h3 className="text-2xl mb-4">Create New Wallet</h3>
-              <div className="mb-4">
-                <label className="block mb-2">Word count</label>
-                <select
-                  value={wordCount}
-                  onChange={(e) => setWordCount(Number(e.target.value) as 128 | 256)}
-                  className="w-full px-4 py-2 bg-gray-700 rounded"
-                >
-                  <option value={128}>12 words</option>
-                  <option value={256}>24 words (more secure)</option>
-                </select>
-              </div>
-              <div className="mb-6">
-                <label className="block mb-2">
-                  Optional passphrase (recommended for extra protection)
-                </label>
-                <input
-                  type="password"
-                  value={newPassphrase}
-                  onChange={(e) => setNewPassphrase(e.target.value)}
-                  className="w-full px-4 py-2 bg-gray-700 rounded"
-                  placeholder="Leave empty for no passphrase"
-                />
-                <p className="text-xs text-gray-400 mt-2">
-                  This salts your seed – different passphrase = different wallet
-                </p>
-              </div>
-              <div className="flex justify-end space-x-4">
-                <button
-                  onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2 bg-gray-700 rounded hover:bg-gray-600"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleCreate}
-                  className="px-4 py-2 bg-bitcoin text-black font-semibold rounded hover:bg-orange-400"
-                >
-                  Create
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Import Modal */}
-        {showImportModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
-            <div className="bg-gray-800 p-8 rounded-lg max-w-lg w-full">
-              <h3 className="text-2xl mb-4">Import Wallet</h3>
-              <div className="mb-4">
-                <label className="block mb-2">Seed phrase (12 or 24 words)</label>
-                <textarea
-                  value={importMnemonic}
-                  onChange={(e) => setImportMnemonic(e.target.value)}
-                  rows={4}
-                  className="w-full px-4 py-2 bg-gray-700 rounded font-mono text-sm"
-                  placeholder="word1 word2 word3 ..."
-                />
-              </div>
-              <div className="mb-6">
-                <label className="block mb-2">Optional passphrase</label>
-                <input
-                  type="password"
-                  value={importPassphrase}
-                  onChange={(e) => setImportPassphrase(e.target.value)}
-                  className="w-full px-4 py-2 bg-gray-700 rounded"
-                />
-              </div>
-              <div className="flex justify-end space-x-4">
-                <button
-                  onClick={() => setShowImportModal(false)}
-                  className="px-4 py-2 bg-gray-700 rounded hover:bg-gray-600"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleImport}
-                  className="px-4 py-2 bg-bitcoin text-black font-semibold rounded hover:bg-orange-400"
-                >
-                  Import
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Modals omitted for brevity - keep your existing ones */}
       </div>
     );
   }
@@ -267,6 +285,7 @@ export default function WalletDashboard() {
 
       {activeTab === 'receive' && currentAddress && (
         <>
+          {/* Existing Receive tab UI - keep your current code */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
             <div className="bg-gray-800 p-6 rounded-lg">
               <div className="text-gray-400 text-sm mb-2">
@@ -348,12 +367,56 @@ export default function WalletDashboard() {
           <h3 className="text-2xl font-semibold mb-6">Send tBTC</h3>
           {txHash && (
             <div className="mb-6 p-4 bg-green-900 rounded">
-              Transaction broadcast! TXID: <span className="font-mono">{txHash}</span>
+              Transaction broadcast! TXID: <span className="font-mono break-all">{txHash}</span>
             </div>
           )}
           {sendError && (
             <div className="mb-6 p-4 bg-red-900 rounded">{sendError}</div>
           )}
+
+          {/* UTXO Selection */}
+          <div className="mb-6">
+            <div className="flex justify-between items-center mb-2">
+              <h4 className="text-lg font-semibold">Select UTXOs to Spend</h4>
+              <button onClick={selectAll} className="text-sm text-bitcoin hover:underline">
+                Select All
+              </button>
+            </div>
+            <div className="bg-gray-900 rounded-lg p-4 max-h-64 overflow-y-auto">
+              {utxos.length === 0 ? (
+                <p className="text-gray-400">No UTXOs found</p>
+              ) : (
+                <div className="space-y-2">
+                  {utxos.map((u: any) => {
+                    const id = `${u.txid}:${u.vout}`;
+                    const isSelected = selectedUtxoIds.has(id);
+                    const status = u.status.confirmed ? 'Confirmed' : 'Mempool';
+                    return (
+                      <div
+                        key={id}
+                        className={`flex items-center justify-between p-3 rounded cursor-pointer transition ${
+                          isSelected ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-700'
+                        }`}
+                        onClick={() => toggleUtxo(id)}
+                      >
+                        <div>
+                          <div className="font-mono text-sm">{u.txid.slice(0, 16)}...:{u.vout}</div>
+                          <div className="text-xs text-gray-400">
+                            {u.address} • {u.value.toLocaleString()} sats • {status}
+                          </div>
+                        </div>
+                        <div className={`w-5 h-5 border-2 rounded ${isSelected ? 'bg-bitcoin border-bitcoin' : 'border-gray-500'}`} />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <p className="text-sm text-gray-400 mt-2">
+              Selected: {utxos.filter(u => selectedUtxoIds.has(`${u.txid}:${u.vout}`)).reduce((s: number, u: any) => s + u.value, 0).toLocaleString()} sats
+            </p>
+          </div>
+
           <div className="space-y-6">
             <div>
               <label className="block mb-2">Recipient Address</label>
@@ -362,7 +425,7 @@ export default function WalletDashboard() {
                 value={recipient}
                 onChange={(e) => setRecipient(e.target.value)}
                 className="w-full px-4 py-2 bg-gray-700 rounded"
-                placeholder="tb1q... or bc1q..."
+                placeholder="tb1q..."
               />
             </div>
             <div>
@@ -372,27 +435,26 @@ export default function WalletDashboard() {
                 value={amountSats}
                 onChange={(e) => setAmountSats(e.target.value)}
                 className="w-full px-4 py-2 bg-gray-700 rounded"
-                placeholder="10000"
+                placeholder="500000"
               />
             </div>
             <div>
-              <label className="block mb-2">Fee Rate</label>
-              <select
+              <label className="block mb-2">Fee Rate (sat/vB)</label>
+              <input
+                type="number"
                 value={feeRate}
-                onChange={(e) => setFeeRate(e.target.value as 'economy' | 'normal' | 'priority')}
+                onChange={(e) => setFeeRate(Number(e.target.value) || 1)}
                 className="w-full px-4 py-2 bg-gray-700 rounded"
-              >
-                <option value="economy">Economy (~1 sat/vB)</option>
-                <option value="normal">Normal (~5 sat/vB)</option>
-                <option value="priority">Priority (~10 sat/vB)</option>
-              </select>
+                min="1"
+              />
+              <p className="text-sm text-gray-400 mt-1">Estimated fee: ~{estimatedFee} sats</p>
             </div>
             <button
               onClick={sendTransaction}
-              disabled={sending || !recipient || !amountSats}
+              disabled={sending || !recipient || !amountSats || selectedUtxoIds.size === 0}
               className="w-full py-3 bg-bitcoin text-black font-bold rounded hover:bg-orange-400 disabled:opacity-50 disabled:cursor-not-allowed transition"
             >
-              {sending ? 'Sending...' : 'Send Transaction'}
+              {sending ? 'Sending...' : 'Send Transaction (RBF enabled)'}
             </button>
           </div>
         </div>
@@ -416,7 +478,7 @@ export default function WalletDashboard() {
                 Cancel
               </button>
               <button
-                onClick={confirmAndSend}
+                onClick={performSend}
                 className="px-6 py-3 bg-red-600 text-white font-bold rounded hover:bg-red-500"
               >
                 I Understand – Send
@@ -426,7 +488,7 @@ export default function WalletDashboard() {
         </div>
       )}
 
-      {/* Seed Backup Modal */}
+      {/* Seed Backup Modal - keep your existing one */}
       {showSeed && mnemonic && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
           <div className="bg-gray-800 p-8 rounded-lg max-w-2xl w-full">

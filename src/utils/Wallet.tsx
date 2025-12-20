@@ -4,9 +4,19 @@ import * as bip39 from 'bip39';
 import * as bitcoin from 'bitcoinjs-lib';
 import BIP32Factory from 'bip32';
 import ecc from '@bitcoinerlab/secp256k1';
+import axios from 'axios';
+import { useNetwork } from './Api'; // Add this import
 
 // Initialize BIP32 with the ECC library
 const bip32 = BIP32Factory(ecc);
+
+interface UTXO {
+  txid: string;
+  vout: number;
+  value: number;
+  address: string;
+  status: { confirmed: boolean };
+}
 
 interface WalletContextType {
   mnemonic: string | null;
@@ -18,11 +28,13 @@ interface WalletContextType {
   generateWallet: (wordCount: 128 | 256) => void;
   importWallet: (mnemonic: string) => Promise<boolean>;
   clearWallet: () => void;
+  getUtxos: () => Promise<UTXO[]>;
+  getKeyPairForIndex: (index: number) => any;
+  network: any;
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
-// Use testnet - change to bitcoin.networks.bitcoin for mainnet
 const NETWORK = bitcoin.networks.testnet;
 
 const STORAGE_KEY = 'bitpoc-wallet';
@@ -34,10 +46,13 @@ interface StoredWallet {
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {
+  const { apiBase } = useNetwork(); // Get dynamic API base
+
   const [mnemonic, setMnemonic] = useState<string | null>(null);
   const [passphrase, setPassphraseState] = useState('');
   const [receiveAddresses, setReceiveAddresses] = useState<string[]>([]);
   const [currentReceiveIndex, setCurrentReceiveIndex] = useState(0);
+  const [root, setRoot] = useState<any>(null);
 
   // Load wallet from localStorage on mount
   useEffect(() => {
@@ -55,22 +70,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Re-derive addresses whenever mnemonic, passphrase, or index changes
+  // Derive root and addresses
   useEffect(() => {
     if (!mnemonic) {
       setReceiveAddresses([]);
+      setRoot(null);
       return;
     }
 
     try {
       const seed = bip39.mnemonicToSeedSync(mnemonic, passphrase);
-      const root = bip32.fromSeed(seed, NETWORK);
+      const newRoot = bip32.fromSeed(seed, NETWORK);
+      setRoot(newRoot);
 
       const newAddresses: string[] = [];
       for (let i = 0; i <= currentReceiveIndex; i++) {
-        // BIP84 derivation path for native SegWit (P2WPKH) on testnet
         const path = `m/84'/1'/0'/0/${i}`;
-        const child = root.derivePath(path);
+        const child = newRoot.derivePath(path);
         const { address } = bitcoin.payments.p2wpkh({
           pubkey: child.publicKey,
           network: NETWORK,
@@ -79,15 +95,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           newAddresses.push(address);
         }
       }
-
       setReceiveAddresses(newAddresses);
     } catch (err: any) {
-      console.error('Error deriving addresses:', err);
+      console.error('Error deriving wallet:', err);
       setReceiveAddresses([]);
+      setRoot(null);
     }
   }, [mnemonic, passphrase, currentReceiveIndex]);
 
-  // Persist wallet state whenever it changes
+  // Persist wallet state
   useEffect(() => {
     if (mnemonic) {
       const toStore: StoredWallet = {
@@ -101,7 +117,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const setPassphrase = (p: string) => {
     setPassphraseState(p);
-    // Changing passphrase creates entirely new wallet - reset index
     setCurrentReceiveIndex(0);
   };
 
@@ -130,7 +145,38 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setPassphraseState('');
     setReceiveAddresses([]);
     setCurrentReceiveIndex(0);
+    setRoot(null);
     localStorage.removeItem(STORAGE_KEY);
+  };
+
+  // Use dynamic apiBase for UTXO fetch
+  const getUtxos = async (): Promise<UTXO[]> => {
+    if (!receiveAddresses.length) return [];
+
+    const utxos: UTXO[] = [];
+    for (const address of receiveAddresses) {
+      try {
+        const { data } = await axios.get(`${apiBase}/address/${address}/utxo`);
+        data.forEach((u: any) => {
+          utxos.push({
+            txid: u.txid,
+            vout: u.vout,
+            value: u.value,
+            address,
+            status: u.status,
+          });
+        });
+      } catch (err) {
+        console.error(`Failed to fetch UTXOs for ${address}`, err);
+      }
+    }
+    return utxos;
+  };
+
+  const getKeyPairForIndex = (index: number) => {
+    if (!root) return null;
+    const path = `m/84'/1'/0'/0/${index}`;
+    return root.derivePath(path);
   };
 
   return (
@@ -145,6 +191,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         generateWallet,
         importWallet,
         clearWallet,
+        getUtxos,
+        getKeyPairForIndex,
+        network: NETWORK,
       }}
     >
       {children}
