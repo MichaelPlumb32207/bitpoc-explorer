@@ -3,9 +3,9 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import * as bip39 from 'bip39';
 import * as bitcoin from 'bitcoinjs-lib';
 import BIP32Factory from 'bip32';
-import ecc from 'tiny-secp256k1/js';  // <-- Force pure JS version (no WASM)
+import * as ecc from 'tiny-secp256k1';
 
-// Initialize BIP32 with the ECC library
+// Initialize BIP32 with the ECC library (correct for tiny-secp256k1 v2+)
 const bip32 = BIP32Factory(ecc);
 
 interface WalletContextType {
@@ -22,6 +22,7 @@ interface WalletContextType {
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
+// Use testnet - change to bitcoin.networks.bitcoin for mainnet
 const NETWORK = bitcoin.networks.testnet;
 
 const STORAGE_KEY = 'bitpoc-wallet';
@@ -40,17 +41,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   // Load wallet from localStorage on mount
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      try {
         const parsed: StoredWallet = JSON.parse(stored);
         setMnemonic(parsed.mnemonic);
         setPassphraseState(parsed.passphrase || '');
         setCurrentReceiveIndex(parsed.currentReceiveIndex || 0);
+      } catch (e) {
+        console.error('Failed to load wallet from storage', e);
+        localStorage.removeItem(STORAGE_KEY);
       }
-    } catch (e) {
-      console.error('Failed to load wallet from storage', e);
-      localStorage.removeItem(STORAGE_KEY);
     }
   }, []);
 
@@ -61,31 +62,27 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    try {
-      const seed = bip39.mnemonicToSeedSync(mnemonic, passphrase);
-      const root = bip32.fromSeed(seed, NETWORK);
+    const seed = bip39.mnemonicToSeedSync(mnemonic, passphrase);
+    const root = bip32.fromSeed(seed, NETWORK);
 
-      const newAddresses: string[] = [];
-      for (let i = 0; i <= currentReceiveIndex; i++) {
-        const path = `m/84'/1'/0'/0/${i}`;
-        const child = root.derivePath(path);
-        const { address } = bitcoin.payments.p2wpkh({
-          pubkey: child.publicKey,
-          network: NETWORK,
-        });
-        if (address) {
-          newAddresses.push(address);
-        }
+    const newAddresses: string[] = [];
+    for (let i = 0; i <= currentReceiveIndex; i++) {
+      // BIP84 derivation path for native SegWit (P2WPKH) on testnet
+      const path = `m/84'/1'/0'/0/${i}`;
+      const child = root.derivePath(path);
+      const { address } = bitcoin.payments.p2wpkh({
+        pubkey: child.publicKey,
+        network: NETWORK,
+      });
+      if (address) {
+        newAddresses.push(address);
       }
-
-      setReceiveAddresses(newAddresses);
-    } catch (err: any) {
-      console.error('Error deriving addresses:', err);
-      setReceiveAddresses([]);
     }
+
+    setReceiveAddresses(newAddresses);
   }, [mnemonic, passphrase, currentReceiveIndex]);
 
-  // Persist wallet state
+  // Persist wallet state whenever it changes
   useEffect(() => {
     if (mnemonic) {
       const toStore: StoredWallet = {
@@ -99,6 +96,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const setPassphrase = (p: string) => {
     setPassphraseState(p);
+    // Changing passphrase creates entirely new wallet - reset index
     setCurrentReceiveIndex(0);
   };
 
