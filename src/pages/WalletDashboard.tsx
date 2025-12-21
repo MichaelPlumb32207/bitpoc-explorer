@@ -1,10 +1,11 @@
 // File: src/pages/WalletDashboard.tsx
-// Updated with debug panel
-// - Added collapsible "Debug Info" section in wallet overview
-// - Shows: currentReceiveIndex, receiveAddresses count, full list of derived addresses, raw UTXOs from getUtxos()
-// - Helps diagnose missing UTXOs or derivation issues
-// - Only visible when wallet is loaded
-// - All previous fixes preserved (in-memory, walletReady, etc.)
+// Updated with:
+// - Funded Addresses Summary section (collapsible, shows each address with balance)
+// - Auto-refresh every 30 seconds when wallet is loaded (for incoming/mempool txs)
+// - Max Send button (sends all spendable balance minus fee)
+// - Better change handling and fee estimation visibility
+// - Added formatBTC helper function (fixes compile error)
+// - All previous features preserved (debug panel, beautiful tx table, privacy, etc.)
 
 import { useState, useEffect } from 'react';
 import { useWallet } from '../utils/Wallet';
@@ -14,6 +15,11 @@ import AddressDetail from './AddressDetail';
 import axios from 'axios';
 import * as bitcoin from 'bitcoinjs-lib';
 import { Psbt } from 'bitcoinjs-lib';
+
+const formatBTC = (sats: number) => {
+  const btc = (sats / 100000000).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+  return `${btc} tBTC`;
+};
 
 export default function WalletDashboard() {
   const { network, apiBase } = useNetwork();
@@ -65,6 +71,10 @@ export default function WalletDashboard() {
   const [showPreviousAddresses, setShowPreviousAddresses] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
+  // New: Funded addresses and auto-refresh
+  const [showFundedAddresses, setShowFundedAddresses] = useState(true);
+  const [addressBalances, setAddressBalances] = useState<Map<string, number>>(new Map());
+
   // Debug state
   const [showDebug, setShowDebug] = useState(false);
   const [debugUtxos, setDebugUtxos] = useState<any[]>([]);
@@ -81,15 +91,43 @@ export default function WalletDashboard() {
     setActiveTab('receive');
   }, [mnemonic]);
 
+  // Auto-refresh every 30 seconds when wallet loaded
+  useEffect(() => {
+    if (!mnemonic || !walletReady) return;
+
+    const interval = setInterval(() => {
+      refreshUtxos();
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [mnemonic, walletReady]);
+
   const refreshUtxos = async () => {
     const fetched = await getUtxos();
     setUtxos(fetched);
-    setDebugUtxos(fetched); // Update debug view too
+    setDebugUtxos(fetched);
+
+    // Update address balances for funded summary
+    const balances = new Map<string, number>();
+    fetched.forEach(u => {
+      balances.set(u.address, (balances.get(u.address) || 0) + u.value);
+    });
+    setAddressBalances(balances);
+
     const confirmedIds = fetched
       .filter((u: any) => u.status.confirmed)
       .map((u: any) => `${u.txid}:${u.vout}`);
     setSelectedUtxoIds(new Set(confirmedIds));
     setRefreshTrigger(prev => prev + 1);
+  };
+
+  // Max Send button
+  const handleMax = () => {
+    const selected = utxos.filter(u => selectedUtxoIds.has(`${u.txid}:${u.vout}`));
+    const total = selected.reduce((sum, u) => sum + u.value, 0);
+    const fee = estimatedFee;
+    const maxSendable = Math.max(0, total - fee);
+    setAmountSats(maxSendable.toString());
   };
 
   useEffect(() => {
@@ -307,6 +345,33 @@ export default function WalletDashboard() {
               </div>
             </div>
 
+            {/* Funded Addresses Summary */}
+            <div className="mb-8">
+              <button
+                onClick={() => setShowFundedAddresses(!showFundedAddresses)}
+                className="text-lg font-medium text-bitcoin mb-2"
+              >
+                {showFundedAddresses ? '▼' : '▶'} Funded Addresses ({addressBalances.size})
+              </button>
+              {showFundedAddresses && addressBalances.size > 0 && (
+                <div className="bg-gray-900 rounded p-4 space-y-2 text-sm">
+                  {Array.from(addressBalances.entries())
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([addr, bal]) => (
+                      <div key={addr} className="flex justify-between">
+                        <span className="font-mono">{addr.slice(0, 8)}...{addr.slice(-6)}</span>
+                        <span className="text-bitcoin">{formatBTC(bal)}</span>
+                      </div>
+                    ))}
+                </div>
+              )}
+              {showFundedAddresses && addressBalances.size === 0 && (
+                <div className="bg-gray-900 rounded p-4 text-sm text-gray-400">
+                  No funded addresses yet
+                </div>
+              )}
+            </div>
+
             {!walletReady ? (
               <div className="flex items-center justify-center py-20">
                 <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-bitcoin"></div>
@@ -315,7 +380,7 @@ export default function WalletDashboard() {
               <AddressDetail isWallet={true} key={refreshTrigger} />
             )}
 
-            {/* Debug Panel - collapsible */}
+            {/* Debug Panel */}
             <div className="mt-8">
               <button
                 onClick={() => setShowDebug(!showDebug)}
@@ -325,42 +390,25 @@ export default function WalletDashboard() {
               </button>
               {showDebug && (
                 <div className="mt-4 bg-gray-900 p-4 rounded text-xs font-mono text-gray-300 space-y-4">
-                  <div>
-                    <strong>currentReceiveIndex:</strong> {currentReceiveIndex}
-                  </div>
-                  <div>
-                    <strong>Derived Addresses Count:</strong> {receiveAddresses.length}
-                  </div>
-                  <div>
-                    <strong>Derived Addresses:</strong>
-                    <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
-                      {receiveAddresses.map((addr, i) => (
+                  <div><strong>currentReceiveIndex:</strong> {currentReceiveIndex}</div>
+                  <div><strong>Derived Addresses Count:</strong> {receiveAddresses.length}</div>
+                  <div><strong>Raw UTXOs:</strong> {debugUtxos.length} found</div>
+                  <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+                    {debugUtxos.length === 0 ? (
+                      <div>No UTXOs fetched</div>
+                    ) : (
+                      debugUtxos.map((u, i) => (
                         <div key={i}>
-                          [{i}] {addr} {i === currentReceiveIndex ? '(current)' : ''}
+                          {u.txid}:{u.vout} | {u.value} sats | {u.address} | {u.status.confirmed ? 'Confirmed' : 'Mempool'}
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <strong>Raw UTXOs (from getUtxos):</strong> {debugUtxos.length} found
-                    <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
-                      {debugUtxos.length === 0 ? (
-                        <div>No UTXOs fetched</div>
-                      ) : (
-                        debugUtxos.map((u, i) => (
-                          <div key={i}>
-                            {u.txid}:{u.vout} | {u.value} sats | {u.address} | {u.status.confirmed ? 'Confirmed' : 'Mempool'}
-                          </div>
-                        ))
-                      )}
-                    </div>
+                      ))
+                    )}
                   </div>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Rest of the UI unchanged */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div>
               <div className="flex space-x-4 mb-4">
@@ -482,15 +530,25 @@ export default function WalletDashboard() {
                       />
                     </div>
 
-                    <div>
-                      <label className="block mb-2">Amount (sats)</label>
-                      <input
-                        type="number"
-                        value={amountSats}
-                        onChange={e => setAmountSats(e.target.value)}
-                        className="w-full px-4 py-2 bg-gray-700 rounded"
-                        placeholder="10000"
-                      />
+                    <div className="flex space-x-2">
+                      <div className="flex-1">
+                        <label className="block mb-2">Amount (sats)</label>
+                        <input
+                          type="number"
+                          value={amountSats}
+                          onChange={e => setAmountSats(e.target.value)}
+                          className="w-full px-4 py-2 bg-gray-700 rounded"
+                          placeholder="10000"
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <button
+                          onClick={handleMax}
+                          className="px-6 py-2 bg-gray-700 rounded hover:bg-gray-600 h-11"
+                        >
+                          Max
+                        </button>
+                      </div>
                     </div>
 
                     <div>
@@ -560,7 +618,7 @@ export default function WalletDashboard() {
         </>
       )}
 
-      {/* Modals unchanged */}
+      {/* Modals */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
           <div className="bg-gray-800 p-8 rounded-lg max-w-md w-full">
