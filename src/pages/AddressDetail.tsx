@@ -1,4 +1,13 @@
 // File: src/pages/AddressDetail.tsx
+// Major UI overhaul for wallet transaction list
+// - Newest transactions first
+// - Type (Sent/Received)
+// - Fee and total for sent txs
+// - Destination address (shortened, full on hover)
+// - Block height for confirmed
+// - Better status colors (yellow mempool, green confirmed)
+// - Cleaner layout
+
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
@@ -25,10 +34,13 @@ interface AddressData {
 
 interface TxSummary {
   txid: string;
-  status: { confirmed: boolean; block_time?: number };
+  fee: number;
+  status: { confirmed: boolean; block_height?: number; block_time?: number };
   vin: { prevout?: { scriptpubkey_address?: string; value: number } }[];
-  vout: { scriptpubkey_address?: string; value: number }[];
+  vout: { scriptpubkey_address?: string; value: number; scriptpubkey_type?: string }[];
 }
+
+const shortAddr = (addr: string | undefined) => addr ? `${addr.slice(0, 8)}...${addr.slice(-6)}` : 'Unknown';
 
 const shortTxid = (txid: string) => `${txid.slice(0, 10)}...${txid.slice(-10)}`;
 
@@ -103,32 +115,40 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
                   spent_txo_sum: 0,
                   tx_count: 0,
                 },
-              };
+              } as AddressData;
             }
-            throw err;
+            console.error(`Failed to fetch data for ${address}`, err);
+            return null;
           }
         });
 
-        const results = await Promise.all(dataPromises);
-        setAddressesData(results);
+        const resolvedData = (await Promise.all(dataPromises)).filter(Boolean) as AddressData[];
+        setAddressesData(resolvedData);
 
-        const txPromises = addressesToQuery.flatMap((address) => [
-          axios.get(`${apiBase}/address/${address}/txs`).catch(() => ({ data: [] })),
-          axios.get(`${apiBase}/address/${address}/txs/mempool`).catch(() => ({ data: [] })),
-        ]);
+        const txPromises = addressesToQuery.map(async (address) => {
+          try {
+            const { data: txs } = await axios.get(`${apiBase}/address/${address}/txs`);
+            return txs as TxSummary[];
+          } catch (err) {
+            console.error(`Failed to fetch txs for ${address}`, err);
+            return [];
+          }
+        });
 
-        const txResponses = await Promise.all(txPromises);
-        const combinedTxs: TxSummary[] = txResponses.flatMap((res) => res.data);
+        const allTxArrays = await Promise.all(txPromises);
+        const combinedTxs = allTxArrays.flat();
 
-        const uniqueTxs = Array.from(
-          new Map(combinedTxs.map((tx) => [tx.txid, tx])).values()
-        )
-          .sort((a, b) => (b.status.block_time || 0) - (a.status.block_time || 0))
-          .slice(0, 20);
+        // Sort newest first: mempool first, then confirmed by block_time descending
+        combinedTxs.sort((a, b) => {
+          if (!a.status.confirmed && b.status.confirmed) return -1;
+          if (a.status.confirmed && !b.status.confirmed) return 1;
+          if (!a.status.block_time || !b.status.block_time) return 0;
+          return b.status.block_time - a.status.block_time;
+        });
 
-        setAllTxs(uniqueTxs);
-      } catch (err: any) {
-        setError('Failed to load address data. Please try again.');
+        setAllTxs(combinedTxs);
+      } catch (err) {
+        setError('Failed to load address data');
         console.error(err);
       } finally {
         setLoading(false);
@@ -136,7 +156,7 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
     };
 
     fetchAll();
-  }, [addressesToQuery.join(','), apiBase]);
+  }, [apiBase, addressesToQuery.join(',')]);
 
   if (loading) {
     return (
@@ -147,51 +167,50 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
   }
 
   if (error || addressesData.length === 0) {
-    return <div className="text-red-500 text-xl">{error || 'No address data'}</div>;
+    return (
+      <div className="text-center py-12">
+        <p className="text-red-500 text-xl mb-4">{error || 'No data found for this address'}</p>
+        {isWallet && <p className="text-gray-400">Try refreshing or generating a new address.</p>}
+      </div>
+    );
   }
 
-  const totalBalance = addressesData.reduce(
-    (sum, data) => sum + (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum),
-    0
-  );
-
-  const primaryAddress = addressesData[0].address;
-  const displayAddress = isWallet ? 'All Wallet Addresses' : primaryAddress;
+  const totalTxCount = addressesData.reduce((sum, d) => sum + d.chain_stats.tx_count + d.mempool_stats.tx_count, 0);
 
   return (
     <div>
-      <div className="flex items-center mb-8">
-        <h2 className="text-4xl font-bold">
-          {isWallet ? 'My Wallet Balance' : `Address ${displayAddress.slice(0, 12)}...${displayAddress.slice(-10)}`}
-        </h2>
-        {!isWallet && (
-          <button
-            onClick={copyAddress}
-            className="ml-4 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded flex items-center space-x-2 transition"
-            title="Copy full address"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-              />
-            </svg>
-            <span>{copied ? 'Copied!' : 'Copy'}</span>
-          </button>
-        )}
+      <div className="flex justify-between items-start mb-8">
+        <div>
+          <h2 className="text-3xl font-bold break-all">
+            {addressesData.length === 1 ? addressesData[0].address : `${addressesData.length} Addresses (Wallet)`}
+          </h2>
+          {addressesData.length === 1 && (
+            <button
+              onClick={copyAddress}
+              className="text-sm text-bitcoin underline mt-2"
+            >
+              {copied ? 'Copied!' : 'Copy Address'}
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-        <div className="bg-gray-800 p-6 rounded-lg col-span-1 md:col-span-2 lg:col-span-4">
-          <div className="text-gray-400 text-sm">Current Balance {isWallet ? '(All Addresses)' : ''}</div>
-          <div className="text-4xl font-bold text-bitcoin">{formatBTC(totalBalance)}</div>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
+        <div className="bg-gray-800 p-6 rounded-lg">
+          <div className="text-gray-400 text-sm">Current Balance</div>
+          <div className="text-3xl font-bold text-bitcoin">
+            {formatBTC(
+              addressesData.reduce(
+                (sum, d) => sum + (d.chain_stats.funded_txo_sum - d.chain_stats.spent_txo_sum),
+                0
+              )
+            )}
+          </div>
         </div>
         <div className="bg-gray-800 p-6 rounded-lg">
           <div className="text-gray-400 text-sm">Transactions</div>
           <div className="text-xl">
-            {addressesData.reduce((sum, d) => sum + d.chain_stats.tx_count, 0)}
+            {totalTxCount}
           </div>
         </div>
         <div className="bg-gray-800 p-6 rounded-lg">
@@ -220,7 +239,10 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
               <tr>
                 <th className="p-4 text-left">TXID</th>
                 <th className="p-4 text-left">Time</th>
-                <th className="p-4 text-left">Value</th>
+                <th className="p-4 text-left">Type</th>
+                <th className="p-4 text-left">Amount</th>
+                <th className="p-4 text-left">Fee</th>
+                <th className="p-4 text-left">Total</th>
                 <th className="p-4 text-left">Status</th>
               </tr>
             </thead>
@@ -235,6 +257,14 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
                   .reduce((sum, v) => sum + (v.prevout?.value || 0), 0);
 
                 const net = received - sent;
+                const isSend = net < 0;
+                const fee = tx.fee || 0;
+                const total = isSend ? Math.abs(net) + fee : Math.abs(net);
+
+                // Find primary destination for sent txs
+                const destination = isSend
+                  ? tx.vout.find(o => !addressesToQuery.includes(o.scriptpubkey_address || ''))?.scriptpubkey_address || 'Multiple/Change'
+                  : 'From multiple';
 
                 return (
                   <tr key={tx.txid} className="border-t border-gray-700 hover:bg-gray-700 transition">
@@ -246,15 +276,29 @@ export default function AddressDetail({ overrideAddr, isWallet = false }: { over
                     <td className="p-4">
                       {tx.status.block_time ? new Date(tx.status.block_time * 1000).toLocaleString() : 'Mempool'}
                     </td>
+                    <td className="p-4">
+                      <span className={isSend ? 'text-red-400' : 'text-green-400'}>
+                        {isSend ? 'Sent' : 'Received'}
+                      </span>
+                    </td>
                     <td className="p-4 text-bitcoin font-medium">
-                      {net > 0 ? '+' : ''}{formatBTC(net)}
+                      {net > 0 ? '+' : ''}{formatBTC(Math.abs(net))}
                     </td>
                     <td className="p-4">
-                      {tx.status.confirmed ? (
-                        <span className="text-green-500">Confirmed</span>
-                      ) : (
-                        <span className="text-yellow-500">Mempool</span>
-                      )}
+                      {isSend ? formatBTC(fee) : '-'}
+                    </td>
+                    <td className="p-4 text-bitcoin font-medium">
+                      {isSend ? '-' : ''}{formatBTC(total)}
+                    </td>
+                    <td className="p-4">
+                      <span className={tx.status.confirmed ? 'text-green-500' : 'text-yellow-500'}>
+                        {tx.status.confirmed ? `Confirmed${tx.status.block_height ? ` (#${tx.status.block_height})` : ''}` : 'Mempool'}
+                      </span>
+                      <div className="text-xs text-gray-400 mt-1">
+                        {destination !== 'Multiple/Change' && (
+                          <span title={destination}>{shortAddr(destination)}</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );

@@ -1,17 +1,21 @@
 // File: src/utils/Wallet.tsx
+// Updated with increased lookahead for reliable UTXO fetching
+// - LOOKAHEAD increased to 20 to cover more addresses
+// - Ensures UTXOs from higher index addresses are discovered
+// - walletReady still signals when derivation is complete
+// - In-memory only (no localStorage)
+
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import * as bip39 from 'bip39';
 import * as bitcoin from 'bitcoinjs-lib';
 import BIP32Factory from 'bip32';
 import ecc from '@bitcoinerlab/secp256k1';
 import axios from 'axios';
-import { useNetwork } from './Api'; // For dynamic apiBase
+import { useNetwork } from './Api';
 
-// Initialize BIP32 with the ECC library (pure JS, no WASM)
 const bip32 = BIP32Factory(ecc);
 
-const GAP_LIMIT = 20; // Standard BIP44 gap limit for scanning
-const LOOKAHEAD = 1;  // Number of unused addresses to keep visible (the next one)
+const LOOKAHEAD = 20; // Increased for better UTXO discovery
 
 interface UTXO {
   txid: string;
@@ -25,8 +29,8 @@ interface WalletContextType {
   mnemonic: string | null;
   passphrase: string;
   setPassphrase: (p: string) => void;
-  receiveAddresses: string[];        // All derived addresses (including lookahead)
-  visibleReceiveAddresses: string[]; // Only addresses to display (used + lookahead)
+  receiveAddresses: string[];
+  visibleReceiveAddresses: string[];
   currentReceiveIndex: number;
   nextReceiveAddress: () => void;
   generateWallet: (wordCount: 128 | 256) => void;
@@ -34,171 +38,75 @@ interface WalletContextType {
   clearWallet: () => void;
   getUtxos: () => Promise<UTXO[]>;
   getKeyPairForIndex: (index: number) => any;
-  network: any;
+  walletReady: boolean;
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
 const NETWORK = bitcoin.networks.testnet;
 
-const STORAGE_KEY = 'bitpoc-wallet';
-
-interface StoredWallet {
-  mnemonic: string;
-  passphrase: string;
-  currentReceiveIndex: number;
-}
-
 export function WalletProvider({ children }: { children: ReactNode }) {
   const { apiBase } = useNetwork();
 
   const [mnemonic, setMnemonic] = useState<string | null>(null);
   const [passphrase, setPassphraseState] = useState('');
-  const [allAddresses, setAllAddresses] = useState<string[]>([]);      // All derived up to current index
-  const [visibleAddresses, setVisibleAddresses] = useState<string[]>([]); // Used + lookahead
+  const [receiveAddresses, setReceiveAddresses] = useState<string[]>([]);
+  const [visibleAddresses, setVisibleAddresses] = useState<string[]>([]);
   const [currentReceiveIndex, setCurrentReceiveIndex] = useState(0);
   const [root, setRoot] = useState<any>(null);
-  const [isScanning, setIsScanning] = useState(false);
+  const [walletReady, setWalletReady] = useState(false);
 
-  // Load wallet from localStorage on mount
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed: StoredWallet = JSON.parse(stored);
-        setMnemonic(parsed.mnemonic);
-        setPassphraseState(parsed.passphrase || '');
-        setCurrentReceiveIndex(parsed.currentReceiveIndex || 0);
-      }
-    } catch (e) {
-      console.error('Failed to load wallet from storage', e);
-      localStorage.removeItem(STORAGE_KEY);
-    }
-  }, []);
-
-  // Derive root when mnemonic/passphrase changes
   useEffect(() => {
     if (!mnemonic) {
       setRoot(null);
+      setWalletReady(false);
       return;
     }
     try {
       const seed = bip39.mnemonicToSeedSync(mnemonic, passphrase);
       const newRoot = bip32.fromSeed(seed, NETWORK);
       setRoot(newRoot);
+      setCurrentReceiveIndex(0);
     } catch (err) {
       console.error('Failed to derive root', err);
       setRoot(null);
     }
   }, [mnemonic, passphrase]);
 
-  // Scan for used addresses with gap limit when root is ready
-  useEffect(() => {
-    if (!root || isScanning) return;
-
-    const scanForActivity = async () => {
-      setIsScanning(true);
-      let maxUsedIndex = -1;
-      let consecutiveUnused = 0;
-      let index = 0;
-
-      while (consecutiveUnused < GAP_LIMIT) {
-        const path = `m/84'/1'/0'/0/${index}`;
-        const child = root.derivePath(path);
-        const { address } = bitcoin.payments.p2wpkh({
-          pubkey: child.publicKey,
-          network: NETWORK,
-        });
-
-        if (!address) {
-          index++;
-          continue;
-        }
-
-        try {
-          const { data } = await axios.get(`${apiBase}/address/${address}`);
-          const hasActivity = data.chain_stats.tx_count > 0 || data.chain_stats.funded_txo_sum > 0;
-
-          if (hasActivity) {
-            maxUsedIndex = index;
-            consecutiveUnused = 0;
-          } else {
-            consecutiveUnused++;
-          }
-        } catch (err) {
-          consecutiveUnused++;
-        }
-
-        index++;
-      }
-
-      const newIndex = maxUsedIndex >= 0 ? maxUsedIndex + GAP_LIMIT + LOOKAHEAD - 1 : GAP_LIMIT + LOOKAHEAD - 1;
-      setCurrentReceiveIndex(newIndex);
-      setIsScanning(false);
-    };
-
-    scanForActivity();
-  }, [root, apiBase]);
-
-  // Derive all addresses up to current index
   useEffect(() => {
     if (!root) {
-      setAllAddresses([]);
+      setReceiveAddresses([]);
       setVisibleAddresses([]);
+      setWalletReady(false);
       return;
     }
 
-    const derived: string[] = [];
-    for (let i = 0; i <= currentReceiveIndex; i++) {
+    const deriveUpTo = currentReceiveIndex + LOOKAHEAD;
+    const newAddresses: string[] = [];
+
+    for (let i = 0; i <= deriveUpTo; i++) {
       const path = `m/84'/1'/0'/0/${i}`;
       const child = root.derivePath(path);
-      const { address } = bitcoin.payments.p2wpkh({
-        pubkey: child.publicKey,
-        network: NETWORK,
-      });
-      if (address) {
-        derived.push(address);
-      }
+      const { address } = bitcoin.payments.p2wpkh({ pubkey: child.publicKey, network: NETWORK });
+      if (address) newAddresses.push(address);
     }
-    setAllAddresses(derived);
 
-    // Determine visible addresses: all used + LOOKAHEAD unused at the end
-    const visible: string[] = [];
-    let unusedStreak = 0;
-    for (let i = derived.length - 1; i >= 0; i--) {
-      // We can't know "used" here without another API call, so we show all up to the last LOOKAHEAD
-      visible.unshift(derived[i]);
-      unusedStreak++;
-      if (unusedStreak >= LOOKAHEAD) break;
-    }
-    // If there are used addresses earlier, include them (simple: show last 10 + lookahead)
-    // For better UX, we show only the last few + lookahead
-    const start = Math.max(0, derived.length - 10 - LOOKAHEAD);
-    setVisibleAddresses(derived.slice(start));
+    setReceiveAddresses(newAddresses);
+
+    const start = Math.max(0, newAddresses.length - 10 - LOOKAHEAD);
+    setVisibleAddresses(newAddresses.slice(start));
+
+    setWalletReady(true);
   }, [root, currentReceiveIndex]);
-
-  // Persist wallet state
-  useEffect(() => {
-    if (mnemonic) {
-      const toStore: StoredWallet = {
-        mnemonic,
-        passphrase,
-        currentReceiveIndex,
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
-    }
-  }, [mnemonic, passphrase, currentReceiveIndex]);
 
   const setPassphrase = (p: string) => {
     setPassphraseState(p);
-    setCurrentReceiveIndex(0);
   };
 
   const generateWallet = (wordCount: 128 | 256) => {
     const strength = wordCount === 128 ? 128 : 256;
     const newMnemonic = bip39.generateMnemonic(strength);
     setMnemonic(newMnemonic);
-    setCurrentReceiveIndex(0);
   };
 
   const importWallet = async (importedMnemonic: string): Promise<boolean> => {
@@ -206,29 +114,28 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       return false;
     }
     setMnemonic(importedMnemonic.trim());
-    setCurrentReceiveIndex(0);
     return true;
   };
 
   const nextReceiveAddress = () => {
-    setCurrentReceiveIndex((prev) => prev + 1);
+    setCurrentReceiveIndex(prev => prev + 1);
   };
 
   const clearWallet = () => {
     setMnemonic(null);
     setPassphraseState('');
-    setAllAddresses([]);
+    setReceiveAddresses([]);
     setVisibleAddresses([]);
     setCurrentReceiveIndex(0);
     setRoot(null);
-    localStorage.removeItem(STORAGE_KEY);
+    setWalletReady(false);
   };
 
   const getUtxos = async (): Promise<UTXO[]> => {
-    if (!allAddresses.length) return [];
+    if (!receiveAddresses.length || !walletReady) return [];
 
     const utxos: UTXO[] = [];
-    for (const address of allAddresses) {
+    for (const address of receiveAddresses) {
       try {
         const { data } = await axios.get(`${apiBase}/address/${address}/utxo`);
         data.forEach((u: any) => {
@@ -259,7 +166,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         mnemonic,
         passphrase,
         setPassphrase,
-        receiveAddresses: allAddresses,
+        receiveAddresses,
         visibleReceiveAddresses: visibleAddresses,
         currentReceiveIndex,
         nextReceiveAddress,
@@ -268,7 +175,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         clearWallet,
         getUtxos,
         getKeyPairForIndex,
-        network: NETWORK,
+        walletReady,
       }}
     >
       {children}
