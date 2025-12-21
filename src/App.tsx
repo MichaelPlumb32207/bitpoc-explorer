@@ -1,3 +1,6 @@
+// File: src/App.tsx
+// Updated to add route for Raw Broadcast tool
+
 import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
@@ -6,7 +9,8 @@ import ExplorerHome from './pages/ExplorerHome';
 import BlockDetail from './pages/BlockDetail';
 import TxDetail from './pages/TxDetail';
 import AddressDetail from './pages/AddressDetail';
-import WalletDashboard from './pages/WalletDashboard'; // New
+import WalletDashboard from './pages/WalletDashboard';
+import RawBroadcast from './pages/RawBroadcast'; // Import the new page
 import { NetworkProvider } from './utils/Api';
 import { WalletProvider } from './utils/Wallet';
 
@@ -25,7 +29,8 @@ function App() {
                   <Route path="/block/:id" element={<BlockDetail />} />
                   <Route path="/tx/:txid" element={<TxDetail />} />
                   <Route path="/address/:addr" element={<AddressDetail />} />
-                  <Route path="/wallet" element={<WalletDashboard />} /> {/* New route */}
+                  <Route path="/wallet" element={<WalletDashboard />} />
+                  <Route path="/tools/broadcast" element={<RawBroadcast />} /> {/* New route */}
                 </Routes>
               </main>
             </div>
